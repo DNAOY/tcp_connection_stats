@@ -225,20 +225,6 @@ def main():
         }
     ]
 
-    # You can modify these hosts as needed:
-    # hosts = [
-    #     {
-    #         "service": "web-service",
-    #         "hostname": "your-host1.com",
-    #         "port": 8080
-    #     },
-    #     {
-    #         "service": "database",
-    #         "hostname": "your-host2.com",
-    #         "port": 3306
-    #     }
-    # ]
-
     monitor = TCPConnectionMonitor(hosts, timeout=5.0)
     monitor.start()
 
