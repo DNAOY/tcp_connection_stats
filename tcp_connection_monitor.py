@@ -26,50 +26,57 @@ class TCPConnectionMonitor:
             host_key = f"{host['hostname']}:{host['port']}"
             self.service_names[host_key] = host['service']
 
-        # Histogram buckets: (0, 100], (100, 500], (500, 1000], (1000, 2000], > 2000
+        # Histogram buckets: <1s, 1-5s (times in milliseconds)
         self.buckets = [
-            (0, 100),
-            (100, 500),
-            (500, 1000),
-            (1000, 2000),
-            (2000, float('inf'))
+            (0, 1000),      # <1s
+            (1000, 5000),   # 1-5s
         ]
 
         # Counters for each host and bucket
         self.counters = defaultdict(lambda: defaultdict(int))
+        self.dns_counters = defaultdict(lambda: defaultdict(int))
         self.total_attempts = defaultdict(int)
         self.failed_connections = defaultdict(int)
+        self.dns_failures = defaultdict(int)
 
         # Threading control
         self.running = True
         self.lock = threading.Lock()
 
-    def measure_connection_time(self, hostname: str, port: int) -> float:
+    def measure_connection_time(self, hostname: str, port: int) -> tuple[float, float]:
         """
         Measure the time to establish a TCP connection to the given host and port.
+        DNS resolution is timed separately from connection timing.
 
         Args:
             hostname: Target hostname
             port: Target port
 
         Returns:
-            Connection time in milliseconds, or -1 if connection failed
+            Tuple of (connection_time_ms, dns_resolution_time_ms), or (-1, -1) if failed
         """
-        start_time = time.time()
-
         try:
+            # Measure DNS resolution time
+            dns_start_time = time.time()
+            ip_address = socket.gethostbyname(hostname)
+            dns_end_time = time.time()
+            dns_resolution_time_ms = (dns_end_time - dns_start_time) * 1000
+
+            # Now measure only the TCP connection time
+            start_time = time.time()
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
-            sock.connect((hostname, port))
+            sock.connect((ip_address, port))
             sock.close()
 
             end_time = time.time()
             connection_time_ms = (end_time - start_time) * 1000
-            return connection_time_ms
+            return connection_time_ms, dns_resolution_time_ms
 
-        except (socket.error, socket.timeout, OSError) as e:
+        except (socket.error, socket.timeout, OSError, socket.gaierror) as e:
             print(f"Connection failed to {hostname}:{port} - {e}")
-            return -1
+            return -1, -1
 
     def categorize_time(self, time_ms: float) -> str:
         """
@@ -82,32 +89,52 @@ class TCPConnectionMonitor:
             String representation of the bucket
         """
         for min_val, max_val in self.buckets:
-            if min_val < time_ms <= max_val:
-                if max_val == float('inf'):
-                    return f"> {min_val}ms"
-                else:
-                    return f"({min_val}, {max_val}]ms"
-        return "Unknown"
+            if min_val <= time_ms < max_val:
+                if min_val == 0:
+                    return "<1s"
+                elif min_val == 1000:
+                    return "1-5s"
 
-    def update_counters(self, hostname: str, port: int, time_ms: float):
+        # If time_ms >= 5000, it's considered a timeout/failure
+        return "timeout"
+
+    def update_counters(self, hostname: str, port: int, connection_time_ms: float, dns_time_ms: float):
         """
-        Update the histogram counters for the given connection time.
+        Update the histogram counters for the given connection and DNS resolution times.
 
         Args:
             hostname: Target hostname
             port: Target port
-            time_ms: Connection time in milliseconds
+            connection_time_ms: Connection time in milliseconds
+            dns_time_ms: DNS resolution time in milliseconds
         """
         host_key = f"{hostname}:{port}"
 
         with self.lock:
             self.total_attempts[host_key] += 1
 
-            if time_ms == -1:
+            if connection_time_ms == -1:
+                self.failed_connections[host_key] += 1
+            elif connection_time_ms >= 5000:
+                # Treat connections >= 5s as failures
                 self.failed_connections[host_key] += 1
             else:
-                bucket = self.categorize_time(time_ms)
-                self.counters[host_key][bucket] += 1
+                bucket = self.categorize_time(connection_time_ms)
+                if bucket != "timeout":
+                    self.counters[host_key][bucket] += 1
+
+            # Track DNS resolution time
+            if dns_time_ms == -1:
+                # DNS resolution failed
+                self.dns_failures[host_key] += 1
+            elif dns_time_ms >= 5000:
+                # DNS resolution too slow (>=5s), treat as DNS failure
+                self.dns_failures[host_key] += 1
+            else:
+                # DNS resolution succeeded and was within acceptable time
+                dns_bucket = self.categorize_time(dns_time_ms)
+                if dns_bucket != "timeout":
+                    self.dns_counters[host_key][dns_bucket] += 1
 
     def print_statistics(self):
         """Print current statistics to log file and reset counters."""
@@ -121,19 +148,21 @@ class TCPConnectionMonitor:
                     # Write header if file is new/empty
                     try:
                         if log_file.tell() == 0:
-                            log_file.write(f"{'Timestamp':<19} | {'Service':<20} | {'0-100ms':>8} | {'100-500ms':>9} | {'500-1000ms':>10} | {'1000-2000ms':>11} | {'>2000ms':>8} | {'Failed':>6} | {'Total':>5}\n")
-                            log_file.write("-" * 100 + "\n")
+                            log_file.write(f"{'Timestamp':<19} | {'Service':<20} | {'Conn<1s':>8} | {'Conn1-5s':>9} | {'DNS<1s':>7} | {'DNS1-5s':>8} | {'DNSFail':>7} | {'ConnFailed':>10} | {'Total':>5}\n")
+                            log_file.write("-" * 107 + "\n")
                     except OSError:
                         # File position not available, skip header check
                         pass
 
                     for host_key in sorted(self.total_attempts.keys(), key=lambda k: self.service_names.get(k, k)):
-                        # Get bucket counts
-                        bucket_0_100 = self.counters[host_key].get("(0, 100]ms", 0)
-                        bucket_100_500 = self.counters[host_key].get("(100, 500]ms", 0)
-                        bucket_500_1000 = self.counters[host_key].get("(500, 1000]ms", 0)
-                        bucket_1000_2000 = self.counters[host_key].get("(1000, 2000]ms", 0)
-                        bucket_2000_plus = self.counters[host_key].get("> 2000ms", 0)
+                        # Get connection bucket counts
+                        conn_under_1s = self.counters[host_key].get("<1s", 0)
+                        conn_1_to_5s = self.counters[host_key].get("1-5s", 0)
+
+                        # Get DNS bucket counts
+                        dns_under_1s = self.dns_counters[host_key].get("<1s", 0)
+                        dns_1_to_5s = self.dns_counters[host_key].get("1-5s", 0)
+                        dns_failed = self.dns_failures[host_key]
 
                         failed = self.failed_connections[host_key]
                         total = self.total_attempts[host_key]
@@ -142,13 +171,15 @@ class TCPConnectionMonitor:
                         service_name = self.service_names.get(host_key, host_key.split(':')[0].split('.')[0])
 
                         # Write data row to log file
-                        log_file.write(f"{current_time:<19} | {service_name:<20} | {bucket_0_100:>8} | {bucket_100_500:>9} | {bucket_500_1000:>10} | {bucket_1000_2000:>11} | {bucket_2000_plus:>8} | {failed:>6} | {total:>5}\n")
+                        log_file.write(f"{current_time:<19} | {service_name:<20} | {conn_under_1s:>8} | {conn_1_to_5s:>9} | {dns_under_1s:>7} | {dns_1_to_5s:>8} | {dns_failed:>7} | {failed:>10} | {total:>5}\n")
 
                 # Also print to console for immediate feedback
                 print(f"Statistics logged to {log_filename} at {current_time}")
 
             # Reset counters
             self.counters.clear()
+            self.dns_counters.clear()
+            self.dns_failures.clear()
             self.total_attempts.clear()
             self.failed_connections.clear()
 
@@ -161,9 +192,9 @@ class TCPConnectionMonitor:
 
                 hostname = host['hostname']
                 port = host['port']
-                connection_time = self.measure_connection_time(hostname, port)
+                connection_time, dns_time = self.measure_connection_time(hostname, port)
                 print(".", end="", flush=True)
-                self.update_counters(hostname, port, connection_time)
+                self.update_counters(hostname, port, connection_time, dns_time)
 
             if self.running:
                 time.sleep(2)
@@ -219,8 +250,8 @@ def main():
             "port": 443
         },
         {
-            "service": "profile-api",
-            "hostname": "profile-api.einstein.dna.fi",
+            "service": "monokkeli",
+            "hostname": "monokkeli.dna.fi",
             "port": 443
         }
     ]

@@ -30,15 +30,11 @@ python3 tcp_connection_monitor.py
 ## Features
 
 - **Connection Testing**: Tests TCP connections to specified hosts every 2 seconds
-- **Histogram Tracking**: Categorizes connection times into buckets:
-  - (0, 100] ms
-  - (100, 500] ms
-  - (500, 1000] ms
-  - (1000, 2000] ms
-  - > 2000 ms
+- **Separate Timing**: Measures DNS resolution and TCP connection times independently
+- **Histogram Tracking**: Categorizes both connection and DNS resolution times into performance buckets
 - **Daily Log Files**: Writes statistics to daily log files named `tcp_stats_YYYYMMDD.log`
 - **Statistics Reporting**: Logs detailed statistics every 5 minutes in tabular format
-- **Error Handling**: Tracks failed connections separately
+- **Error Handling**: Tracks connection failures, DNS failures, and timeouts separately
 - **Multithreaded**: Uses separate threads for monitoring and statistics reporting
 - **Service Names**: Uses configurable service names for easier identification in logs
 
@@ -55,13 +51,20 @@ Statistics logged to tcp_stats_20251008.log at 2025-10-08 14:30:00
 ```
 
 ### Log File Format
-The daily log files contain tabular data with the following columns:
+The daily log files contain tabular data with separate metrics for connection and DNS performance:
 ```
-Timestamp           | Service              | 0-100ms  | 100-500ms | 500-1000ms | 1000-2000ms | >2000ms  | Failed | Total
-2025-10-08 14:30:00 | promotion-api        |      125 |        15 |          2 |           0 |        0 |      1 |   143
-2025-10-08 14:30:00 | total-commander-api  |       98 |        45 |          0 |           0 |        0 |      0 |   143
-2025-10-08 14:30:00 | profile-api          |      140 |         3 |          0 |           0 |        0 |      0 |   143
+Timestamp           | Service              | Conn<1s | Conn1-5s | DNS<1s | DNS1-5s | DNSFail | ConnFailed | Total
+2025-10-09 14:30:00 | promotion-api        |     120 |       15 |    135 |        0 |       0 |          8 |   143
+2025-10-09 14:30:00 | total-commander-api  |      98 |       45 |    140 |        3 |       0 |          0 |   143
+2025-10-09 14:30:00 | monokkeli            |     140 |        3 |    143 |        0 |       0 |          0 |   143
 ```
+
+**Column Descriptions:**
+- **Conn<1s/Conn1-5s**: TCP connection time performance buckets
+- **DNS<1s/DNS1-5s**: DNS resolution time performance buckets
+- **DNSFail**: DNS failures (failed resolutions + slow resolutions ≥5s)
+- **ConnFailed**: Connection failures and timeouts (≥5 seconds)
+- **Total**: Total connection attempts
 
 ## Configuration
 
@@ -82,4 +85,5 @@ Timestamp           | Service              | 0-100ms  | 100-500ms | 500-1000ms |
 The script is currently configured to monitor:
 - promotion-api (promotion-api.raprod.acs.dnacloud.fi:443)
 - total-commander-api (x754686ncl-vpce-0e6f57fcc39b0622c.execute-api.eu-west-1.amazonaws.com:443)
-- profile-api (profile-api.einstein.dna.fi:443)
+- monokkeli (monokkeli.dna.fi:443)
+- monokkeli (monokkeli.dna.fi:443)
