@@ -56,6 +56,8 @@ class TCPConnectionMonitor:
             Tuple of (connection_time_ms, dns_resolution_time_ms), or (-1, -1) if failed
         """
         try:
+            # default is timeout/failure
+            connection_time_ms, dns_resolution_time_ms = -1, -1
             # Measure DNS resolution time
             dns_start_time = time.time()
             ip_address = socket.gethostbyname(hostname)
@@ -76,7 +78,7 @@ class TCPConnectionMonitor:
 
         except (socket.error, socket.timeout, OSError, socket.gaierror) as e:
             print(f"Connection failed to {hostname}:{port} - {e}")
-            return -1, -1
+            return connection_time_ms, dns_resolution_time_ms
 
     def categorize_time(self, time_ms: float) -> str:
         """
