@@ -242,18 +242,18 @@ def main():
     # Configure the hosts to monitor with hostname, port, and service name
     hosts = [
         {
-            "service": "promotion-api",
+            "service": "promotion-api-dev",
+            "hostname": "promotion-api.radev.acs.dnacloud.fi",
+            "port": 443
+        },
+        {
+            "service": "promotion-api-prod",
             "hostname": "promotion-api.raprod.acs.dnacloud.fi",
             "port": 443
         },
         {
-            "service": "total-commander-api",
-            "hostname": "x754686ncl-vpce-0e6f57fcc39b0622c.execute-api.eu-west-1.amazonaws.com",
-            "port": 443
-        },
-        {
-            "service": "monokkeli",
-            "hostname": "monokkeli.dna.fi",
+            "service": "semarchy",
+            "hostname": "mdm-prod.acs.dnacloud.fi",
             "port": 443
         }
     ]
